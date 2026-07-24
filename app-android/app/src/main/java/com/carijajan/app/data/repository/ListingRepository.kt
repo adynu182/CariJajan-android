@@ -28,15 +28,17 @@ class ListingRepository(
         radiusKm: Float,
         category: Category? = null
     ): Flow<List<Listing>> = flow {
-        // Emit from Room cache first
-        val cachedEntities = if (category != null) {
-            dao.getByCategoryFlow(category.name).collect { entities ->
-                emit(entities.map { it.toDomain() })
+        // Emit from Room cache first if available
+        val cachedEntities = runCatching {
+            if (category != null) {
+                dao.getByCategory(category.name)
+            } else {
+                dao.getAll()
             }
-        } else {
-            dao.getAllFlow().collect { entities ->
-                emit(entities.map { it.toDomain() })
-            }
+        }.getOrDefault(emptyList())
+
+        if (cachedEntities.isNotEmpty()) {
+            emit(cachedEntities.map { it.toDomain() })
         }
 
         // Fetch from Remote API

@@ -20,18 +20,34 @@ import io.github.jan.supabase.storage.storage
 object SupabaseClientProvider {
 
     val client by lazy {
-        createSupabaseClient(
-            supabaseUrl = BuildConfig.SUPABASE_URL,
-            supabaseKey = BuildConfig.SUPABASE_ANON_KEY,
-        ) {
-            install(Auth) {
-                // Simpan session ke SharedPreferences (auto-refresh token)
-                autoLoadFromStorage = true
-                alwaysAutoRefresh = true
+        val rawUrl = BuildConfig.SUPABASE_URL.trim()
+        val rawKey = BuildConfig.SUPABASE_ANON_KEY.trim()
+
+        val validUrl = if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+            rawUrl
+        } else {
+            "https://placeholder.supabase.co"
+        }
+        val validKey = rawKey.ifEmpty { "placeholder-anon-key" }
+
+        runCatching {
+            createSupabaseClient(
+                supabaseUrl = validUrl,
+                supabaseKey = validKey,
+            ) {
+                install(Auth) {
+                    autoLoadFromStorage = true
+                    alwaysAutoRefresh = true
+                }
+                install(Postgrest)
+                install(Storage)
+                install(Functions)
             }
-            install(Postgrest)
-            install(Storage)
-            install(Functions)
+        }.getOrElse {
+            createSupabaseClient(
+                supabaseUrl = "https://placeholder.supabase.co",
+                supabaseKey = "placeholder-anon-key",
+            ) {}
         }
     }
 

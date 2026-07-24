@@ -45,8 +45,14 @@ interface CachedListingDao {
     @androidx.room.Query("SELECT * FROM cached_listings ORDER BY distanceKm ASC")
     fun getAllFlow(): kotlinx.coroutines.flow.Flow<List<CachedListingEntity>>
 
+    @androidx.room.Query("SELECT * FROM cached_listings ORDER BY distanceKm ASC")
+    suspend fun getAll(): List<CachedListingEntity>
+
     @androidx.room.Query("SELECT * FROM cached_listings WHERE category = :category ORDER BY distanceKm ASC")
     fun getByCategoryFlow(category: String): kotlinx.coroutines.flow.Flow<List<CachedListingEntity>>
+
+    @androidx.room.Query("SELECT * FROM cached_listings WHERE category = :category ORDER BY distanceKm ASC")
+    suspend fun getByCategory(category: String): List<CachedListingEntity>
 
     @androidx.room.Query("SELECT * FROM cached_listings WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): CachedListingEntity?
