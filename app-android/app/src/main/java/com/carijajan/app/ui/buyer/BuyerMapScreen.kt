@@ -1,6 +1,6 @@
 package com.carijajan.app.ui.buyer
 
-import android.content.Context
+import android.os.Bundle
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -11,19 +11,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.carijajan.app.BuildConfig
 import com.carijajan.app.domain.model.Category
-import com.carijajan.app.domain.model.Listing
-import org.maplibre.android.MapLibre
 import org.maplibre.android.annotations.MarkerOptions
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -41,11 +38,6 @@ fun BuyerMapScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-
-    // Init MapLibre once
-    remember {
-        MapLibre.getInstance(context)
-    }
 
     val userLat by viewModel.userLat.collectAsState()
     val userLng by viewModel.userLng.collectAsState()
@@ -74,11 +66,11 @@ fun BuyerMapScreen(
         }
     }
 
-    val mapTilerKey = BuildConfig.MAPTILER_API_KEY
-    val styleUrl = if (mapTilerKey.isNotBlank()) {
+    val mapTilerKey = BuildConfig.MAPTILER_API_KEY.trim()
+    val styleUrl = if (mapTilerKey.isNotBlank() && mapTilerKey != "YOUR_MAPTILER_API_KEY") {
         "https://api.maptiler.com/maps/streets-v2/style.json?key=$mapTilerKey"
     } else {
-        Style.getPredefinedStyle("Demotiles")
+        "https://demotiles.maplibre.org/style.json"
     }
 
     LaunchedEffect(Unit) {
@@ -88,24 +80,26 @@ fun BuyerMapScreen(
     // Update markers when listings change
     LaunchedEffect(uiState, mapLibreMap) {
         val map = mapLibreMap ?: return@LaunchedEffect
-        map.clear()
+        runCatching {
+            map.clear()
 
-        if (uiState is BuyerUiState.Success) {
-            val listings = (uiState as BuyerUiState.Success).listings
-            listings.forEach { listing ->
-                val markerOptions = MarkerOptions()
-                    .position(LatLng(listing.latitude, listing.longitude))
-                    .title("${listing.category.emoji} ${listing.name}")
-                    .snippet(listing.priceLabel)
+            if (uiState is BuyerUiState.Success) {
+                val listings = (uiState as BuyerUiState.Success).listings
+                listings.forEach { listing ->
+                    val markerOptions = MarkerOptions()
+                        .position(LatLng(listing.latitude, listing.longitude))
+                        .title("${listing.category.emoji} ${listing.name}")
+                        .snippet(listing.priceLabel)
 
-                map.addMarker(markerOptions)
-            }
-            map.setOnMarkerClickListener { marker ->
-                val clicked = listings.find {
-                    it.name == marker.title.removePrefix("${it.category.emoji} ")
+                    map.addMarker(markerOptions)
                 }
-                clicked?.let { onSelectListing(it.id) }
-                true
+                map.setOnMarkerClickListener { marker ->
+                    val clicked = listings.find {
+                        it.name == marker.title?.removePrefix("${it.category.emoji} ")
+                    }
+                    clicked?.let { onSelectListing(it.id) }
+                    true
+                }
             }
         }
     }
@@ -148,17 +142,17 @@ fun BuyerMapScreen(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     MapView(ctx).apply {
-                        onCreate(null)
-                        onStart()
-                        onResume()
+                        onCreate(Bundle())
                         mapViewInstance = this
                         getMapAsync { map ->
                             mapLibreMap = map
-                            map.setStyle(styleUrl) { style ->
-                                map.cameraPosition = CameraPosition.Builder()
-                                    .target(LatLng(userLat, userLng))
-                                    .zoom(14.0)
-                                    .build()
+                            runCatching {
+                                map.setStyle(styleUrl) { _ ->
+                                    map.cameraPosition = CameraPosition.Builder()
+                                        .target(LatLng(userLat, userLng))
+                                        .zoom(14.0)
+                                        .build()
+                                }
                             }
                         }
                     }
