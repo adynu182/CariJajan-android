@@ -366,3 +366,5 @@ Key test cases:
 26. Unit tests & integration tests
 27. Privacy Policy page (wajib untuk Play Store)
 28. App icon, splash screen, onboarding singkat
+
+ok
