@@ -134,6 +134,20 @@ class ListingApi {
             .decodeSingleOrNull<ListingDetailDto>()
     }
 
+    /**
+     * Ambil lapak milik penjual yang sedang login (1 seller = 1 listing, seller_id UNIQUE).
+     * Dipakai oleh dashboard penjual — jangan gunakan [getNearby] untuk ini, karena endpoint
+     * itu mencari lapak terdekat dari sebuah koordinat, bukan berdasarkan pemilik.
+     */
+    suspend fun getMyListing(sellerId: String): ListingDetailDto? {
+        return client.postgrest["listings"]
+            .select(Columns.raw("*")) {
+                filter { eq("seller_id", sellerId) }
+                limit(1)
+            }
+            .decodeSingleOrNull<ListingDetailDto>()
+    }
+
     /** Buat lapak baru untuk penjual yang sudah login */
     suspend fun createListing(request: CreateListingRequest): String {
         val result = client.postgrest["listings"]

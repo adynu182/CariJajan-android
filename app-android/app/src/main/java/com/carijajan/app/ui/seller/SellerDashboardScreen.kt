@@ -49,30 +49,32 @@ class SellerViewModel(
             _isLoading.value = true
             val userId = authApi.getCurrentUserId()
             if (userId != null) {
-                // Fetch seller's listing (1 seller = 1 listing)
+                // Fetch seller's own listing (1 seller = 1 listing, by seller_id)
                 runCatching {
-                    val listings = listingApi.getNearby(0.0, 0.0, 5.0f) // fallback get
-                    _sellerListing.value = listings.find { true }?.let { dto ->
+                    val dto = listingApi.getMyListing(userId)
+                    _sellerListing.value = dto?.let {
+                        val photos = listingApi.getPhotos(it.id)
+                        val primaryPhoto = photos.find { p -> p.isPrimary } ?: photos.firstOrNull()
                         Listing(
-                            id = dto.id,
-                            sellerId = userId,
-                            sellerName = dto.sellerName,
-                            sellerAvatarUrl = dto.sellerAvatarUrl,
-                            name = dto.name,
-                            category = com.carijajan.app.domain.model.Category.fromSlug(dto.category),
-                            description = dto.description,
-                            priceMin = dto.priceMin,
-                            priceMax = dto.priceMax,
-                            isOpen = dto.isOpen,
-                            latitude = dto.latitude,
-                            longitude = dto.longitude,
+                            id = it.id,
+                            sellerId = it.sellerId,
+                            sellerName = "Penjual",
+                            sellerAvatarUrl = null,
+                            name = it.name,
+                            category = com.carijajan.app.domain.model.Category.fromSlug(it.category),
+                            description = it.description,
+                            priceMin = it.priceMin,
+                            priceMax = it.priceMax,
+                            isOpen = it.isOpen,
+                            latitude = primaryPhoto?.latitude ?: 0.0,
+                            longitude = primaryPhoto?.longitude ?: 0.0,
                             distanceKm = null,
-                            lastPhotoAt = dto.lastPhotoAt,
-                            primaryPhotoUrl = dto.primaryPhotoUrl,
-                            primaryThumbnailUrl = dto.primaryThumbnailUrl,
-                            avgRating = dto.avgRating,
-                            reviewCount = dto.reviewCount,
-                            viewCount = dto.viewCount
+                            lastPhotoAt = it.lastPhotoAt,
+                            primaryPhotoUrl = primaryPhoto?.photoUrl,
+                            primaryThumbnailUrl = primaryPhoto?.thumbnailUrl,
+                            avgRating = null,
+                            reviewCount = 0,
+                            viewCount = it.viewCount
                         )
                     }
                 }

@@ -120,8 +120,8 @@ class ListingRepository(
             priceMin = dto.priceMin,
             priceMax = dto.priceMax,
             isOpen = dto.isOpen,
-            latitude = 0.0, // detail contains lat/lng in photos
-            longitude = 0.0,
+            latitude = primaryPhoto?.latitude ?: 0.0,
+            longitude = primaryPhoto?.longitude ?: 0.0,
             distanceKm = null,
             lastPhotoAt = dto.lastPhotoAt,
             primaryPhotoUrl = primaryPhoto?.photoUrl,

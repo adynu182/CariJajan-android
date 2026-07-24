@@ -99,6 +99,7 @@ fun compressPhoto(inputFile: File, outputFile: File): File {
     val TARGET_MAX_SIZE_KB = 500
 
     val original = BitmapFactory.decodeFile(inputFile.absolutePath)
+        ?: throw IllegalArgumentException("Foto tidak dapat dibaca atau rusak: ${inputFile.name}")
 
     val scaled = if (original.width > TARGET_MAX_SIDE_PX || original.height > TARGET_MAX_SIDE_PX) {
         val ratio = minOf(
