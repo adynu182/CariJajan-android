@@ -130,6 +130,24 @@ fun BuyerMapScreen(
         }
     }
 
+    // Pindahkan kamera setiap kali lokasi user berubah (baik saat map pertama kali
+    // siap, maupun setelah GPS asli berhasil didapat menyusul fallback Jakarta).
+    // SEBELUMNYA posisi kamera cuma di-set SEKALI di dalam factory{} saat MapView
+    // dibuat — pakai userLat/userLng yang saat itu MASIH fallback Jakarta, karena
+    // fetchDeviceLocation() belum selesai. Makanya peta tidak pernah pindah ke
+    // lokasi asli walau GPS-nya berhasil didapat beberapa saat kemudian.
+    LaunchedEffect(userLat, userLng, mapLibreMap) {
+        val map = mapLibreMap ?: return@LaunchedEffect
+        map.animateCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(LatLng(userLat, userLng))
+                    .zoom(14.0)
+                    .build()
+            )
+        )
+    }
+
     // Aktifkan titik "lokasi saya" di peta begitu style selesai dimuat DAN izin ada.
     LaunchedEffect(hasLocationPermission, loadedStyle) {
         val map = mapLibreMap ?: return@LaunchedEffect
@@ -177,14 +195,6 @@ fun BuyerMapScreen(
                                 arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
                             )
                         }
-                        mapLibreMap?.animateCamera(
-                            CameraUpdateFactory.newCameraPosition(
-                                CameraPosition.Builder()
-                                    .target(LatLng(userLat, userLng))
-                                    .zoom(14.0)
-                                    .build()
-                            )
-                        )
                     },
                     modifier = Modifier.padding(bottom = 8.dp),
                     containerColor = MaterialTheme.colorScheme.secondaryContainer
@@ -217,10 +227,6 @@ fun BuyerMapScreen(
                             runCatching {
                                 map.setStyle(styleUrl) { style ->
                                     loadedStyle = style
-                                    map.cameraPosition = CameraPosition.Builder()
-                                        .target(LatLng(userLat, userLng))
-                                        .zoom(14.0)
-                                        .build()
                                 }
                             }
                         }
@@ -275,11 +281,34 @@ fun BuyerMapScreen(
                 }
             }
 
-            // Loading / Permission hint / Empty overlay
+            // Loading / Error / Permission hint / Empty overlay
             if (uiState is BuyerUiState.Loading) {
                 CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center)
                 )
+            } else if (uiState is BuyerUiState.Error) {
+                Surface(
+                    modifier = Modifier
+                        .padding(bottom = 80.dp)
+                        .align(Alignment.BottomCenter),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = (uiState as BuyerUiState.Error).message,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        TextButton(onClick = { viewModel.fetchListings() }) {
+                            Text("Coba Lagi", fontSize = 13.sp)
+                        }
+                    }
+                }
             } else if (!hasLocationPermission) {
                 Surface(
                     modifier = Modifier

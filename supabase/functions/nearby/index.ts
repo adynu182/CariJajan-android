@@ -37,27 +37,42 @@ serve(async (req: Request) => {
     return new Response(null, {
       headers: {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
       },
     });
   }
 
-  if (req.method !== "GET") {
+  // PENTING: client Android (supabase-kt) selalu mengirim POST untuk
+  // `client.functions.invoke(...)` — tidak ada opsi bawaan untuk kirim GET.
+  // Fungsi ini sebelumnya HANYA menerima GET dan membaca parameter dari query
+  // string, jadi setiap panggilan dari app selalu kena 405 "Method tidak
+  // diizinkan", exception itu tertelan diam-diam di ListingRepository, dan
+  // peta/daftar lapak jadi terlihat kosong / loading selamanya.
+  if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method tidak diizinkan" }), {
       status: 405,
       headers: { "Content-Type": "application/json" },
     });
   }
 
-  // --- Parse query params ---
-  const url = new URL(req.url);
-  const lat        = parseFloat(url.searchParams.get("lat") ?? "");
-  const lng        = parseFloat(url.searchParams.get("lng") ?? "");
-  const radiusKm   = Math.min(parseFloat(url.searchParams.get("radius_km") ?? "1"), 5); // max 5 km
-  const category   = url.searchParams.get("category") ?? null;
-  const page       = Math.max(parseInt(url.searchParams.get("page") ?? "1"), 1);
-  const pageSize   = Math.min(parseInt(url.searchParams.get("page_size") ?? "50"), 100);
+  // --- Parse body JSON (dikirim oleh client, bukan query string) ---
+  let body: Record<string, unknown>;
+  try {
+    body = await req.json();
+  } catch {
+    return new Response(
+      JSON.stringify({ error: "Body request tidak valid" }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  const lat        = parseFloat(String(body.lat ?? ""));
+  const lng        = parseFloat(String(body.lng ?? ""));
+  const radiusKm   = Math.min(parseFloat(String(body.radius_km ?? "1")), 5); // max 5 km
+  const category   = (body.category as string | undefined) ?? null;
+  const page       = Math.max(parseInt(String(body.page ?? "1")), 1);
+  const pageSize   = Math.min(parseInt(String(body.page_size ?? "50")), 100);
   const offset     = (page - 1) * pageSize;
 
   // Validasi koordinat
@@ -93,74 +108,8 @@ serve(async (req: Request) => {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
   );
 
-  const radiusMeters = radiusKm * 1000;
-
-  // --- Query PostGIS ---
-  // Ambil kolom minimal yang perlu dilihat pembeli (jangan expose data sensitif)
-  let query = `
-    SELECT
-      l.id,
-      l.name,
-      l.category,
-      l.description,
-      l.price_min,
-      l.price_max,
-      l.is_open,
-      l.last_photo_at,
-      l.view_count,
-      ST_Y(l.current_location::geometry)  AS latitude,
-      ST_X(l.current_location::geometry)  AS longitude,
-      ROUND(
-        (ST_Distance(l.current_location, ST_MakePoint($1, $2)::geography) / 1000.0)::numeric,
-        2
-      ) AS distance_km,
-      -- foto utama
-      p.photo_url     AS primary_photo_url,
-      p.thumbnail_url AS primary_thumbnail_url,
-      -- nama penjual (tanpa nomor HP)
-      u.full_name     AS seller_name,
-      u.avatar_url    AS seller_avatar_url,
-      -- rata-rata rating
-      COALESCE(
-        ROUND(AVG(r.rating)::numeric, 1),
-        0
-      ) AS avg_rating,
-      COUNT(r.id)::int AS review_count
-    FROM public.listings l
-    JOIN public.users u ON u.id = l.seller_id
-    LEFT JOIN public.listing_photos p ON p.listing_id = l.id AND p.is_primary = TRUE
-    LEFT JOIN public.reviews r ON r.listing_id = l.id
-    WHERE l.is_open = TRUE
-      AND l.current_location IS NOT NULL
-      AND ST_DWithin(
-            l.current_location,
-            ST_MakePoint($1, $2)::geography,
-            $3
-          )
-  `;
-
-  const params: (number | string)[] = [lng, lat, radiusMeters];
-
-  if (category) {
-    params.push(category);
-    query += ` AND l.category = $${params.length}`;
-  }
-
-  query += `
-    GROUP BY l.id, u.full_name, u.avatar_url, p.photo_url, p.thumbnail_url
-    ORDER BY distance_km ASC
-    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-  `;
-  params.push(pageSize, offset);
-
-  const { data, error } = await supabase.rpc("exec_sql", {}) // fallback ke raw query
-    .catch(() => ({ data: null, error: { message: "RPC not available" } }));
-
-  // Supabase JS tidak support raw parameterized SQL langsung — pakai rpc wrapper
-  // Alternatif: pakai postgrest dengan computed columns, atau Edge Function saja
-  // Di sini kita pakai supabase.from() dengan filter manual sebagai fallback bersih:
-  const radiusDeg = radiusKm / 111.0; // ~approximation untuk bounding box pre-filter
-
+  // Supabase JS tidak support raw parameterized SQL langsung — pakai postgrest
+  // dengan filter manual, lalu hitung jarak presisi di JS dengan haversine.
   let sbQuery = supabase
     .from("listings")
     .select(`
@@ -168,11 +117,15 @@ serve(async (req: Request) => {
       is_open, last_photo_at, view_count,
       current_location,
       users!seller_id (full_name, avatar_url),
-      listing_photos!inner (photo_url, thumbnail_url, is_primary),
+      listing_photos (photo_url, thumbnail_url, is_primary),
       reviews (rating)
     `)
     .eq("is_open", true)
     .not("current_location", "is", null);
+  // ^ NB: listing_photos SENGAJA tidak pakai `!inner` — itu inner join yang
+  // menyembunyikan SEMUA lapak yang belum punya foto sama sekali (termasuk
+  // lapak baru yang baru saja daftar). Pembeli tetap harus bisa lihat lapak
+  // walau penjualnya belum sempat upload foto.
 
   if (category) {
     sbQuery = sbQuery.eq("category", category);
@@ -189,8 +142,7 @@ serve(async (req: Request) => {
     );
   }
 
-  // Post-filter + hitung jarak di JS (karena postgrest tidak support ST_DWithin langsung)
-  // Untuk scale besar, migrasi ke stored procedure/RPC
+  // Hitung jarak di JS (karena postgrest tidak support ST_DWithin langsung)
   const EARTH_RADIUS_KM = 6371;
 
   function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {

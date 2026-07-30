@@ -37,12 +37,14 @@ class ListingRepository(
             }
         }.getOrDefault(emptyList())
 
+        var emittedCache = false
         if (cachedEntities.isNotEmpty()) {
             emit(cachedEntities.map { it.toDomain() })
+            emittedCache = true
         }
 
         // Fetch from Remote API
-        runCatching {
+        val remoteResult = runCatching {
             val remoteDtos = api.getNearby(lat, lng, radiusKm, category)
             val nowEpoch = Clock.System.now().epochSeconds
 
@@ -74,7 +76,7 @@ class ListingRepository(
             dao.clearStale(nowEpoch - 600) // clear cache > 10 mins
             dao.insertAll(newEntities)
 
-            val domainListings = remoteDtos.map { dto ->
+            remoteDtos.map { dto ->
                 Listing(
                     id = dto.id,
                     sellerId = "",
@@ -97,8 +99,20 @@ class ListingRepository(
                     viewCount = dto.viewCount
                 )
             }
+        }
 
+        remoteResult.onSuccess { domainListings ->
             emit(domainListings)
+        }.onFailure { error ->
+            // PENTING: sebelumnya kalau panggilan remote gagal (mis. edge function
+            // error) DAN tidak ada cache, flow ini selesai tanpa emit() sama sekali.
+            // Akibatnya BuyerViewModel.fetchListings() tidak pernah keluar dari state
+            // Loading — peta & daftar lapak terlihat "muter terus" tanpa data maupun
+            // pesan error. Sekarang errornya dilempar ulang (kalau belum ada cache yang
+            // sempat ditampilkan) supaya caller bisa menangkap & menampilkan pesan error.
+            if (!emittedCache) {
+                throw error
+            }
         }
     }
 
