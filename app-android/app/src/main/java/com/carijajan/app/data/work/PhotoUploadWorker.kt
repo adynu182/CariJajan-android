@@ -45,6 +45,10 @@ class PhotoUploadWorker(
         /**
          * Buat dan enqueue upload request.
          * Panggil dari ViewModel setelah foto berhasil diambil & dikompresi.
+         *
+         * @return ID dari work request, dipakai caller untuk observe [WorkInfo]
+         * (lihat UploadPhotoScreen) — supaya UI tahu kapan upload BENAR-BENAR
+         * selesai, bukan cuma "berhasil di-enqueue".
          */
         fun enqueue(
             context: Context,
@@ -55,7 +59,7 @@ class PhotoUploadWorker(
             gpsAccuracyM: Float,
             capturedAtEpoch: Long,
             isPrimary: Boolean = true,
-        ) {
+        ): java.util.UUID {
             val data = Data.Builder()
                 .putString(KEY_LISTING_ID, listingId)
                 .putString(KEY_LOCAL_PATH, localFilePath)
@@ -81,6 +85,7 @@ class PhotoUploadWorker(
                 .build()
 
             WorkManager.getInstance(context).enqueue(request)
+            return request.id
         }
     }
 
@@ -135,10 +140,20 @@ class PhotoUploadWorker(
             localFile.delete()
 
             Result.success()
-        }.getOrElse { error ->
-            android.util.Log.e("PhotoUploadWorker", "Upload gagal: ${error.message}", error)
-            // Retry (WorkManager akan exponential backoff)
-            Result.retry()
-        }
+        }.fold(
+            onSuccess = { it },
+            onFailure = { error ->
+                android.util.Log.e("PhotoUploadWorker", "Upload gagal: ${error.message}", error)
+                val statusCode = (error as? io.github.jan.supabase.exceptions.RestException)?.statusCode
+                if (statusCode != null && statusCode in 400..499) {
+                    // Error permanen sisi klien (bucket tidak ada, RLS/izin ditolak,
+                    // auth invalid, dsb) — retry tidak akan pernah berhasil.
+                    Result.failure()
+                } else {
+                    // Kemungkinan besar masalah jaringan sementara — retry masuk akal.
+                    Result.retry()
+                }
+            }
+        )
     }
 }

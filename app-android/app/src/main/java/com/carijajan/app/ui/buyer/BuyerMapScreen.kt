@@ -1,6 +1,11 @@
 package com.carijajan.app.ui.buyer
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.pm.PackageManager
 import android.os.Bundle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -16,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -25,9 +31,28 @@ import org.maplibre.android.annotations.MarkerOptions
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.modes.CameraMode
+import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+
+/**
+ * Aktifkan MapLibre LocationComponent (titik biru "lokasi saya") di atas style
+ * yang sudah selesai dimuat. Dipanggil hanya setelah izin lokasi dipastikan ada
+ * (lihat pemanggilnya) — makanya @SuppressLint di sini aman.
+ */
+@SuppressLint("MissingPermission")
+private fun enableUserLocationDot(map: MapLibreMap, style: Style, context: android.content.Context) {
+    val activationOptions = LocationComponentActivationOptions.builder(context, style).build()
+    with(map.locationComponent) {
+        activateLocationComponent(activationOptions)
+        isLocationComponentEnabled = true
+        cameraMode = CameraMode.NONE
+        renderMode = RenderMode.COMPASS
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,6 +72,21 @@ fun BuyerMapScreen(
 
     var mapLibreMap by remember { mutableStateOf<MapLibreMap?>(null) }
     var mapViewInstance by remember { mutableStateOf<MapView?>(null) }
+    var loadedStyle by remember { mutableStateOf<Style?>(null) }
+
+    var hasLocationPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { granted ->
+        hasLocationPermission = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    }
 
     DisposableEffect(lifecycleOwner, mapViewInstance) {
         val mapView = mapViewInstance ?: return@DisposableEffect onDispose {}
@@ -75,6 +115,27 @@ fun BuyerMapScreen(
 
     LaunchedEffect(Unit) {
         viewModel.fetchListings()
+    }
+
+    // Minta izin lokasi kalau belum ada, lalu ambil lokasi device asli begitu
+    // izinnya tersedia (baik dari awal, atau setelah user baru saja menyetujui
+    // dialog izin). Sebelumnya tidak ada kode ini sama sekali.
+    LaunchedEffect(hasLocationPermission) {
+        if (hasLocationPermission) {
+            viewModel.fetchDeviceLocation()
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            )
+        }
+    }
+
+    // Aktifkan titik "lokasi saya" di peta begitu style selesai dimuat DAN izin ada.
+    LaunchedEffect(hasLocationPermission, loadedStyle) {
+        val map = mapLibreMap ?: return@LaunchedEffect
+        val style = loadedStyle ?: return@LaunchedEffect
+        if (!hasLocationPermission) return@LaunchedEffect
+        runCatching { enableUserLocationDot(map, style, context) }
     }
 
     // Update markers when listings change
@@ -109,6 +170,13 @@ fun BuyerMapScreen(
             Column(horizontalAlignment = Alignment.End) {
                 FloatingActionButton(
                     onClick = {
+                        if (hasLocationPermission) {
+                            viewModel.fetchDeviceLocation()
+                        } else {
+                            locationPermissionLauncher.launch(
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+                            )
+                        }
                         mapLibreMap?.animateCamera(
                             CameraUpdateFactory.newCameraPosition(
                                 CameraPosition.Builder()
@@ -147,7 +215,8 @@ fun BuyerMapScreen(
                         getMapAsync { map ->
                             mapLibreMap = map
                             runCatching {
-                                map.setStyle(styleUrl) { _ ->
+                                map.setStyle(styleUrl) { style ->
+                                    loadedStyle = style
                                     map.cameraPosition = CameraPosition.Builder()
                                         .target(LatLng(userLat, userLng))
                                         .zoom(14.0)
@@ -206,11 +275,38 @@ fun BuyerMapScreen(
                 }
             }
 
-            // Loading / Empty overlay
+            // Loading / Permission hint / Empty overlay
             if (uiState is BuyerUiState.Loading) {
                 CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center)
                 )
+            } else if (!hasLocationPermission) {
+                Surface(
+                    modifier = Modifier
+                        .padding(bottom = 80.dp)
+                        .align(Alignment.BottomCenter),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "Izin lokasi belum aktif",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        TextButton(onClick = {
+                            locationPermissionLauncher.launch(
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+                            )
+                        }) {
+                            Text("Aktifkan", fontSize = 13.sp)
+                        }
+                    }
+                }
             } else if (uiState is BuyerUiState.Success && (uiState as BuyerUiState.Success).listings.isEmpty()) {
                 Surface(
                     modifier = Modifier

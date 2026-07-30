@@ -1,15 +1,25 @@
 package com.carijajan.app.ui.buyer
 
+import android.Manifest
 import android.app.Application
+import android.location.Location
+import androidx.annotation.RequiresPermission
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.carijajan.app.data.repository.ListingRepository
 import com.carijajan.app.domain.model.Category
 import com.carijajan.app.domain.model.Listing
+import com.google.android.gms.location.CurrentLocationRequest
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 sealed class BuyerUiState {
     object Loading : BuyerUiState()
@@ -30,6 +40,10 @@ class BuyerViewModel(application: Application) : AndroidViewModel(application) {
     private val _userLng = MutableStateFlow(106.8456)
     val userLng: StateFlow<Double> = _userLng.asStateFlow()
 
+    /** True setelah lokasi device asli berhasil didapat (bukan lagi fallback Jakarta). */
+    private val _hasRealLocation = MutableStateFlow(false)
+    val hasRealLocation: StateFlow<Boolean> = _hasRealLocation.asStateFlow()
+
     private val _radiusKm = MutableStateFlow(1.0f) // Default 1 km
     val radiusKm: StateFlow<Float> = _radiusKm.asStateFlow()
 
@@ -39,7 +53,58 @@ class BuyerViewModel(application: Application) : AndroidViewModel(application) {
     fun updateLocation(lat: Double, lng: Double) {
         _userLat.value = lat
         _userLng.value = lng
+        _hasRealLocation.value = true
         fetchListings()
+    }
+
+    /**
+     * Ambil lokasi GPS device saat ini dan panggil [updateLocation].
+     *
+     * PENTING: sebelumnya tidak ada satupun kode yang memanggil ini atau
+     * FusedLocationProviderClient di layar pembeli — userLat/userLng selalu
+     * diam di fallback Jakarta di atas, jadi peta & radius pencarian tidak
+     * pernah memakai lokasi asli pengguna. Ini penyebab "lokasi saya tidak
+     * muncul di peta".
+     *
+     * Aman dipanggil berkali-kali (mis. tiap kali izin lokasi baru diberikan);
+     * cukup no-op kalau izin belum ada, tidak melempar exception.
+     */
+    fun fetchDeviceLocation() {
+        val context = getApplication<Application>()
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) return
+
+        viewModelScope.launch {
+            runCatching { requestCurrentLocation(context) }
+                .onSuccess { location ->
+                    if (location != null) {
+                        updateLocation(location.latitude, location.longitude)
+                    }
+                }
+            // Kegagalan (GPS mati, timeout, dsb) sengaja dibiarkan diam — peta
+            // tetap jalan dengan fallback Jakarta, tidak perlu memblokir UI.
+        }
+    }
+
+    @RequiresPermission(anyOf = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION])
+    private suspend fun requestCurrentLocation(context: Application): Location? {
+        val fusedClient = LocationServices.getFusedLocationProviderClient(context)
+        val request = CurrentLocationRequest.Builder()
+            .setPriority(Priority.PRIORITY_BALANCED_POWER_ACCURACY)
+            .setMaxUpdateAgeMillis(60_000) // boleh pakai fix yang agak lama, cukup untuk browsing peta
+            .build()
+
+        return suspendCancellableCoroutine { continuation ->
+            val task = fusedClient.getCurrentLocation(request, null)
+            task.addOnSuccessListener { location -> continuation.resume(location) }
+            task.addOnFailureListener { e -> continuation.resumeWithException(e) }
+        }
     }
 
     fun updateRadius(radius: Float) {

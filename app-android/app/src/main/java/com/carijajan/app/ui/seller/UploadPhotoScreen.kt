@@ -24,10 +24,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.carijajan.app.data.work.PhotoUploadWorker
 import com.carijajan.app.domain.usecase.CaptureGpsUseCase
 import com.carijajan.app.domain.usecase.compressPhoto
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -44,6 +49,7 @@ fun UploadPhotoScreen(
     val scope = rememberCoroutineScope()
 
     var isCapturing by remember { mutableStateOf(false) }
+    var statusText by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
@@ -110,7 +116,7 @@ fun UploadPhotoScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Foto lapakmu sekarang & kunci lokasi GPS",
+                    text = statusText ?: "Foto lapakmu sekarang & kunci lokasi GPS",
                     color = Color.White,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
@@ -131,18 +137,21 @@ fun UploadPhotoScreen(
                             object : ImageCapture.OnImageSavedCallback {
                                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                                     scope.launch {
-                                        runCatching {
+                                        try {
                                             // Step 1: Capture High Accuracy GPS
+                                            statusText = "Mengunci lokasi GPS..."
                                             val gpsUseCase = CaptureGpsUseCase(context)
                                             val gpsResult = gpsUseCase.execute()
 
                                             // Step 2: Compress Photo
+                                            statusText = "Mengompres foto..."
                                             val compressedFile = File(context.cacheDir, "compressed_${System.currentTimeMillis()}.jpg")
                                             compressPhoto(photoFile, compressedFile)
                                             photoFile.delete()
 
                                             // Step 3: Enqueue WorkManager for Background Upload
-                                            PhotoUploadWorker.enqueue(
+                                            statusText = "Mengunggah foto..."
+                                            val workId = PhotoUploadWorker.enqueue(
                                                 context = context,
                                                 listingId = listingId,
                                                 localFilePath = compressedFile.absolutePath,
@@ -152,11 +161,39 @@ fun UploadPhotoScreen(
                                                 capturedAtEpoch = gpsResult.capturedAt.epochSeconds,
                                                 isPrimary = true
                                             )
-                                        }.onSuccess {
+
+                                            // Step 4: Tunggu upload BENAR-BENAR selesai (bukan cuma
+                                            // ke-enqueue) sebelum menutup layar ini. Sebelumnya layar
+                                            // langsung ditutup setelah enqueue, jadi kalau upload gagal
+                                            // di background, user tidak pernah tahu — foto terlihat
+                                            // "hilang" begitu saja.
+                                            val finalInfo = withTimeoutOrNull(30_000L) {
+                                                WorkManager.getInstance(context)
+                                                    .getWorkInfoByIdFlow(workId)
+                                                    .filterNotNull()
+                                                    .first { it.state.isFinished }
+                                            }
+
                                             isCapturing = false
-                                            onSuccess()
-                                        }.onFailure { error ->
+                                            statusText = null
+
+                                            when (finalInfo?.state) {
+                                                WorkInfo.State.SUCCEEDED -> onSuccess()
+                                                WorkInfo.State.FAILED -> {
+                                                    errorMessage = "Gagal mengunggah foto. Pastikan " +
+                                                        "koneksi internet stabil lalu coba lagi."
+                                                }
+                                                else -> {
+                                                    // Belum selesai dalam 30 detik (mis. sinyal lemah).
+                                                    // WorkManager tetap lanjut mencoba di background
+                                                    // walau layar ini ditutup, jadi ini bukan kegagalan.
+                                                    errorMessage = "Koneksi lambat — foto masih diunggah " +
+                                                        "di latar belakang. Kamu bisa tutup halaman ini."
+                                                }
+                                            }
+                                        } catch (error: Exception) {
                                             isCapturing = false
+                                            statusText = null
                                             errorMessage = error.localizedMessage ?: "Gagal mengambil lokasi GPS"
                                         }
                                     }
@@ -164,6 +201,7 @@ fun UploadPhotoScreen(
 
                                 override fun onError(exception: ImageCaptureException) {
                                     isCapturing = false
+                                    statusText = null
                                     errorMessage = "Gagal mengambil foto: ${exception.message}"
                                 }
                             }
