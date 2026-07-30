@@ -11,6 +11,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.carijajan.app.data.remote.AuthApi
+import com.carijajan.app.data.remote.RegisterOutcome
+import com.carijajan.app.data.remote.toFriendlyAuthMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,7 +33,7 @@ class BuyerAuthViewModel(
             }.onSuccess {
                 _uiState.value = AuthUiState.Success("Login berhasil")
             }.onFailure { error ->
-                _uiState.value = AuthUiState.Error(error.localizedMessage ?: "Login gagal")
+                _uiState.value = AuthUiState.Error(error.toFriendlyAuthMessage())
             }
         }
     }
@@ -41,10 +43,15 @@ class BuyerAuthViewModel(
             _uiState.value = AuthUiState.Loading
             runCatching {
                 authApi.registerBuyer(email, pass, name)
-            }.onSuccess {
-                _uiState.value = AuthUiState.Success("Registrasi berhasil")
+            }.onSuccess { outcome ->
+                _uiState.value = when (outcome) {
+                    RegisterOutcome.SIGNED_IN -> AuthUiState.Success("Registrasi berhasil")
+                    RegisterOutcome.CONFIRMATION_REQUIRED -> AuthUiState.Info(
+                        "Registrasi berhasil! Silakan cek email Anda untuk konfirmasi akun, lalu masuk."
+                    )
+                }
             }.onFailure { error ->
-                _uiState.value = AuthUiState.Error(error.localizedMessage ?: "Registrasi gagal")
+                _uiState.value = AuthUiState.Error(error.toFriendlyAuthMessage())
             }
         }
     }
@@ -69,9 +76,16 @@ fun BuyerLoginScreen(
     val uiState by viewModel.uiState.collectAsState()
 
     LaunchedEffect(uiState) {
-        if (uiState is AuthUiState.Success) {
-            onSuccess()
-            viewModel.resetUiState()
+        when (uiState) {
+            is AuthUiState.Success -> {
+                onSuccess()
+                viewModel.resetUiState()
+            }
+            is AuthUiState.Info -> {
+                // Registrasi berhasil tapi butuh konfirmasi email — belum ada session.
+                isRegisterMode = false
+            }
+            else -> Unit
         }
     }
 
@@ -137,6 +151,14 @@ fun BuyerLoginScreen(
                 Text(
                     text = (uiState as AuthUiState.Error).message,
                     color = MaterialTheme.colorScheme.error,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
+            if (uiState is AuthUiState.Info) {
+                Text(
+                    text = (uiState as AuthUiState.Info).message,
+                    color = MaterialTheme.colorScheme.primary,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
