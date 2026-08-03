@@ -66,6 +66,7 @@ fun BuyerMapScreen(
 
     val userLat by viewModel.userLat.collectAsState()
     val userLng by viewModel.userLng.collectAsState()
+    val cameraMoveTick by viewModel.cameraMoveTick.collectAsState()
     val radiusKm by viewModel.radiusKm.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
@@ -136,7 +137,12 @@ fun BuyerMapScreen(
     // dibuat — pakai userLat/userLng yang saat itu MASIH fallback Jakarta, karena
     // fetchDeviceLocation() belum selesai. Makanya peta tidak pernah pindah ke
     // lokasi asli walau GPS-nya berhasil didapat beberapa saat kemudian.
-    LaunchedEffect(userLat, userLng, mapLibreMap) {
+    // cameraMoveTick sengaja ikut jadi key: StateFlow userLat/userLng tidak akan
+    // ganti value (makanya efek ini tidak jalan ulang) kalau lokasi baru yang
+    // didapat sama persis dengan yang lama — padahal tombol "Lokasi Saya" harus
+    // tetap memindahkan kamera setiap kali dipencet meski koordinatnya tidak
+    // berubah. Lihat komentar di BuyerViewModel.cameraMoveTick.
+    LaunchedEffect(userLat, userLng, cameraMoveTick, mapLibreMap) {
         val map = mapLibreMap ?: return@LaunchedEffect
         map.animateCamera(
             CameraUpdateFactory.newCameraPosition(
@@ -156,9 +162,22 @@ fun BuyerMapScreen(
         runCatching { enableUserLocationDot(map, style, context) }
     }
 
-    // Update markers when listings change
-    LaunchedEffect(uiState, mapLibreMap) {
+    // Update markers when listings change.
+    // PENTING: loadedStyle wajib jadi key & guard di sini. mapLibreMap sudah
+    // ter-set begitu getMapAsync{} callback jalan, TAPI style-nya (setStyle())
+    // baru selesai dimuat belakangan secara async (fetch network). Kalau
+    // listing (uiState = Success) datang duluan sebelum style siap — yang
+    // gampang terjadi karena cache Room di ListingRepository bisa emit hampir
+    // instan — map.addMarker() dipanggil sebelum style ready, gagal diam-diam
+    // (ketutup runCatching), dan efek ini TIDAK PERNAH jalan ulang karena
+    // loadedStyle sebelumnya bukan bagian dari key-nya. Hasilnya: vendor/toko
+    // tidak pernah muncul di peta walau datanya sudah berhasil di-fetch (dan
+    // kelihatan normal di BuyerListScreen, yang tidak bergantung pada style
+    // peta sama sekali). Pola guard loadedStyle ini sama seperti yang dipakai
+    // enableUserLocationDot() di atas.
+    LaunchedEffect(uiState, mapLibreMap, loadedStyle) {
         val map = mapLibreMap ?: return@LaunchedEffect
+        loadedStyle ?: return@LaunchedEffect
         runCatching {
             map.clear()
 
@@ -180,6 +199,8 @@ fun BuyerMapScreen(
                     true
                 }
             }
+        }.onFailure { error ->
+            android.util.Log.e("BuyerMapScreen", "Gagal menampilkan marker vendor di peta", error)
         }
     }
 

@@ -50,10 +50,30 @@ class BuyerViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedCategory = MutableStateFlow<Category?>(null)
     val selectedCategory: StateFlow<Category?> = _selectedCategory.asStateFlow()
 
+    /**
+     * Naik setiap kali ada permintaan untuk memindahkan kamera ke lokasi user —
+     * sengaja dipisah dari nilai lat/lng itu sendiri.
+     *
+     * PENTING: MutableStateFlow tidak mengirim update baru kalau value barunya
+     * SAMA PERSIS dengan value lama (pakai equals(), mirip distinctUntilChanged()).
+     * Tombol "Lokasi Saya" memanggil fetchDeviceLocation() -> updateLocation(),
+     * tapi kalau device tidak banyak bergerak (atau fused location provider
+     * mengembalikan fix yang di-cache, lihat setMaxUpdateAgeMillis di bawah),
+     * lat/lng yang didapat persis sama dengan sebelumnya. Akibatnya userLat/
+     * userLng di StateFlow tidak berubah, layar peta tidak recompose, dan
+     * LaunchedEffect yang menggerakkan kamera tidak pernah jalan ulang — tombol
+     * terlihat seperti tidak berfungsi. Counter ini dipakai sebagai key
+     * tambahan di LaunchedEffect supaya kamera tetap dipaksa bergerak ulang
+     * setiap kali tombol dipencet, terlepas dari apakah koordinatnya berubah.
+     */
+    private val _cameraMoveTick = MutableStateFlow(0)
+    val cameraMoveTick: StateFlow<Int> = _cameraMoveTick.asStateFlow()
+
     fun updateLocation(lat: Double, lng: Double) {
         _userLat.value = lat
         _userLng.value = lng
         _hasRealLocation.value = true
+        _cameraMoveTick.value += 1
         fetchListings()
     }
 
