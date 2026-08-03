@@ -39,6 +39,7 @@ fun BuyerListScreen(
     val radiusKm by viewModel.radiusKm.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
+    val hasRealLocation by viewModel.hasRealLocation.collectAsState()
 
     Scaffold(
         topBar = {
@@ -129,7 +130,25 @@ fun BuyerListScreen(
                 }
                 is BuyerUiState.Success -> {
                     val listings = (uiState as BuyerUiState.Success).listings
-                    if (listings.isEmpty()) {
+                    if (listings.isEmpty() && !hasRealLocation) {
+                        // Lihat catatan hasRealLocation di BuyerMapScreen — kalau GPS asli
+                        // belum berhasil didapat, pencarian masih pakai koordinat fallback
+                        // Jakarta, jadi "kosong" di sini bisa berarti lokasinya belum benar,
+                        // bukan berarti memang tidak ada pedagang di sekitar user.
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "Belum dapat GPS asli, masih pakai lokasi default Jakarta",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                TextButton(onClick = { viewModel.fetchDeviceLocation() }) {
+                                    Text("Coba Lagi")
+                                }
+                            }
+                        }
+                    } else if (listings.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 text = "Belum ada pedagang di radius ${"%.1f".format(radiusKm)} km",

@@ -67,6 +67,7 @@ fun BuyerMapScreen(
     val userLat by viewModel.userLat.collectAsState()
     val userLng by viewModel.userLng.collectAsState()
     val cameraMoveTick by viewModel.cameraMoveTick.collectAsState()
+    val hasRealLocation by viewModel.hasRealLocation.collectAsState()
     val radiusKm by viewModel.radiusKm.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
@@ -354,6 +355,36 @@ fun BuyerMapScreen(
                             )
                         }) {
                             Text("Aktifkan", fontSize = 13.sp)
+                        }
+                    }
+                }
+            } else if (!hasRealLocation) {
+                // PENTING: sebelumnya hasRealLocation cuma disimpan di ViewModel tapi
+                // TIDAK PERNAH dibaca di UI manapun. Kalau fetchDeviceLocation() gagal
+                // diam-diam (GPS mati/timeout/emulator tanpa location di-set) padahal
+                // izin lokasi SUDAH diberikan, pencarian tetap jalan dari koordinat
+                // fallback Jakarta — dan lapak yang lokasinya jauh dari Jakarta (mis.
+                // di luar radius 1-5 km dari situ) akan selalu terlihat "kosong" tanpa
+                // ada petunjuk bahwa penyebabnya adalah lokasi device, bukan datanya.
+                Surface(
+                    modifier = Modifier
+                        .padding(bottom = 80.dp)
+                        .align(Alignment.BottomCenter),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "Belum dapat GPS asli, masih pakai lokasi default Jakarta",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        TextButton(onClick = { viewModel.fetchDeviceLocation() }) {
+                            Text("Coba Lagi", fontSize = 13.sp)
                         }
                     }
                 }
