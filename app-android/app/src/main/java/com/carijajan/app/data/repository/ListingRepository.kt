@@ -5,6 +5,7 @@ import com.carijajan.app.data.local.AppDatabase
 import com.carijajan.app.data.local.CachedListingEntity
 import com.carijajan.app.data.remote.CreateListingRequest
 import com.carijajan.app.data.remote.ListingApi
+import com.carijajan.app.data.remote.NearbyListingDto
 import com.carijajan.app.data.remote.ReportRequest
 import com.carijajan.app.data.remote.UpdateListingRequest
 import com.carijajan.app.domain.model.Category
@@ -44,65 +45,27 @@ class ListingRepository(
         }
 
         // Fetch from Remote API
-        val remoteResult = runCatching {
-            val remoteDtos = api.getNearby(lat, lng, radiusKm, category)
-            val nowEpoch = Clock.System.now().epochSeconds
+        val remoteResult = runCatching { api.getNearby(lat, lng, radiusKm, category) }
 
-            val newEntities = remoteDtos.map { dto ->
-                CachedListingEntity(
-                    id = dto.id,
-                    sellerId = "",
-                    sellerName = dto.sellerName,
-                    sellerAvatarUrl = dto.sellerAvatarUrl,
-                    name = dto.name,
-                    category = dto.category,
-                    description = dto.description,
-                    priceMin = dto.priceMin,
-                    priceMax = dto.priceMax,
-                    isOpen = dto.isOpen,
-                    latitude = dto.latitude,
-                    longitude = dto.longitude,
-                    distanceKm = dto.distanceKm,
-                    lastPhotoAtEpoch = dto.lastPhotoAt?.epochSeconds,
-                    primaryPhotoUrl = dto.primaryPhotoUrl,
-                    primaryThumbnailUrl = dto.primaryThumbnailUrl,
-                    avgRating = dto.avgRating,
-                    reviewCount = dto.reviewCount,
-                    viewCount = dto.viewCount,
-                    cachedAtEpoch = nowEpoch
-                )
+        remoteResult.onSuccess { remoteDtos ->
+            // Emit dulu begitu remote sukses — JANGAN ditunda oleh caching di bawah.
+            emit(remoteDtos.map { it.toDomainListing() })
+
+            // Simpan ke cache Room secara best-effort SETELAH data di-emit.
+            // PENTING: sebelumnya insert cache ini dilakukan di dalam runCatching
+            // YANG SAMA dengan fetch remote-nya, SEBELUM emit() dipanggil sama
+            // sekali. Kalau dao.clearStale()/insertAll() gagal (mis. disk penuh,
+            // constraint error) — walau api.getNearby() di atas SUKSES dapat data
+            // — seluruh blok runCatching ikut dianggap gagal, listing yang sudah
+            // sukses diambil dari server ikut terbuang, dan (kalau tidak ada cache
+            // lama) UI cuma dapat state Error padahal datanya sebenarnya sudah ada.
+            // Sekarang caching gagal pun tidak menghalangi listing yang sudah
+            // didapat untuk tetap sampai & ditampilkan di UI.
+            runCatching {
+                val nowEpoch = Clock.System.now().epochSeconds
+                dao.clearStale(nowEpoch - 600) // clear cache > 10 mins
+                dao.insertAll(remoteDtos.map { it.toCachedEntity(nowEpoch) })
             }
-
-            dao.clearStale(nowEpoch - 600) // clear cache > 10 mins
-            dao.insertAll(newEntities)
-
-            remoteDtos.map { dto ->
-                Listing(
-                    id = dto.id,
-                    sellerId = "",
-                    sellerName = dto.sellerName,
-                    sellerAvatarUrl = dto.sellerAvatarUrl,
-                    name = dto.name,
-                    category = Category.fromSlug(dto.category),
-                    description = dto.description,
-                    priceMin = dto.priceMin,
-                    priceMax = dto.priceMax,
-                    isOpen = dto.isOpen,
-                    latitude = dto.latitude,
-                    longitude = dto.longitude,
-                    distanceKm = dto.distanceKm,
-                    lastPhotoAt = dto.lastPhotoAt,
-                    primaryPhotoUrl = dto.primaryPhotoUrl,
-                    primaryThumbnailUrl = dto.primaryThumbnailUrl,
-                    avgRating = dto.avgRating,
-                    reviewCount = dto.reviewCount,
-                    viewCount = dto.viewCount
-                )
-            }
-        }
-
-        remoteResult.onSuccess { domainListings ->
-            emit(domainListings)
         }.onFailure { error ->
             // PENTING: sebelumnya kalau panggilan remote gagal (mis. edge function
             // error) DAN tidak ada cache, flow ini selesai tanpa emit() sama sekali.
@@ -209,5 +172,50 @@ class ListingRepository(
         avgRating = avgRating,
         reviewCount = reviewCount,
         viewCount = viewCount
+    )
+
+    private fun NearbyListingDto.toDomainListing() = Listing(
+        id = id,
+        sellerId = "",
+        sellerName = sellerName,
+        sellerAvatarUrl = sellerAvatarUrl,
+        name = name,
+        category = Category.fromSlug(category),
+        description = description,
+        priceMin = priceMin,
+        priceMax = priceMax,
+        isOpen = isOpen,
+        latitude = latitude,
+        longitude = longitude,
+        distanceKm = distanceKm,
+        lastPhotoAt = lastPhotoAt,
+        primaryPhotoUrl = primaryPhotoUrl,
+        primaryThumbnailUrl = primaryThumbnailUrl,
+        avgRating = avgRating,
+        reviewCount = reviewCount,
+        viewCount = viewCount
+    )
+
+    private fun NearbyListingDto.toCachedEntity(cachedAtEpoch: Long) = CachedListingEntity(
+        id = id,
+        sellerId = "",
+        sellerName = sellerName,
+        sellerAvatarUrl = sellerAvatarUrl,
+        name = name,
+        category = category,
+        description = description,
+        priceMin = priceMin,
+        priceMax = priceMax,
+        isOpen = isOpen,
+        latitude = latitude,
+        longitude = longitude,
+        distanceKm = distanceKm,
+        lastPhotoAtEpoch = lastPhotoAt?.epochSeconds,
+        primaryPhotoUrl = primaryPhotoUrl,
+        primaryThumbnailUrl = primaryThumbnailUrl,
+        avgRating = avgRating,
+        reviewCount = reviewCount,
+        viewCount = viewCount,
+        cachedAtEpoch = cachedAtEpoch
     )
 }
