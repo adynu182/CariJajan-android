@@ -7,6 +7,7 @@ import com.carijajan.app.domain.model.Review
 import io.github.jan.supabase.functions.functions
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Columns
+import io.github.jan.supabase.storage.storage
 import io.ktor.client.statement.bodyAsText
 import kotlinx.datetime.Instant
 import kotlinx.serialization.SerialName
@@ -102,6 +103,11 @@ class ListingApi {
 
     private val client = SupabaseClientProvider.client
 
+    companion object {
+        // Harus sama persis dengan STORAGE_BUCKET di PhotoUploadWorker.kt
+        private const val PHOTOS_BUCKET = "listing-photos"
+    }
+
     /** Ambil lapak terdekat via Edge Function /nearby */
     suspend fun getNearby(
         lat: Double,
@@ -190,6 +196,49 @@ class ListingApi {
                 order("captured_at", io.github.jan.supabase.postgrest.query.Order.DESCENDING)
             }
             .decodeList()
+    }
+
+    /**
+     * Hapus 1 foto lapak: objek Storage (foto utama + thumbnail-nya) lalu baris
+     * listing_photos-nya. Storage dihapus best-effort (kalau gagal tetap lanjut
+     * hapus baris DB-nya) supaya foto "yatim" di Storage tidak memblokir user.
+     *
+     * PENTING: butuh migration baru untuk policy DELETE di listing_photos —
+     * tabel itu sebelumnya cuma punya policy SELECT & INSERT, jadi tanpa
+     * migration ini baris DB-nya tidak akan pernah benar-benar terhapus
+     * (RLS diam-diam menolak, 0 baris ke-delete).
+     */
+    suspend fun deletePhoto(photo: com.carijajan.app.domain.model.ListingPhoto) {
+        val paths = listOfNotNull(
+            storagePathFromPublicUrl(photo.photoUrl),
+            storagePathFromPublicUrl(photo.thumbnailUrl),
+        )
+        if (paths.isNotEmpty()) {
+            runCatching { client.storage[PHOTOS_BUCKET].delete(*paths.toTypedArray()) }
+        }
+        client.postgrest["listing_photos"].delete { filter { eq("id", photo.id) } }
+
+        // Kalau yang dihapus adalah foto primary, jadikan sisa foto yang paling
+        // baru sebagai primary baru — konsisten dengan convention "foto terbaru
+        // = primary" yang dipakai insertPhoto(). Bukan wajib (query nearby sudah
+        // fallback ke foto pertama kalau tidak ada yang is_primary), tapi ini
+        // membuat listing tetap punya foto sampul yang jelas & terbaru.
+        if (photo.isPrimary) {
+            getPhotos(photo.listingId).firstOrNull()?.let { newest ->
+                client.postgrest["listing_photos"]
+                    .update(buildJsonObject { put("is_primary", true) }) {
+                        filter { eq("id", newest.id) }
+                    }
+            }
+        }
+    }
+
+    /** Ekstrak path relatif dalam bucket dari public URL Supabase Storage. */
+    private fun storagePathFromPublicUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val marker = "/storage/v1/object/public/$PHOTOS_BUCKET/"
+        val idx = url.indexOf(marker)
+        return if (idx == -1) null else url.substring(idx + marker.length)
     }
 
     /** Laporkan lapak (tanpa autentikasi) */

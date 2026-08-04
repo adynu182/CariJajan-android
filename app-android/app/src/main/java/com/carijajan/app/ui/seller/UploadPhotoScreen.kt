@@ -8,15 +8,25 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -26,7 +36,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import coil3.compose.AsyncImage
+import com.carijajan.app.data.remote.ListingApi
 import com.carijajan.app.data.work.PhotoUploadWorker
+import com.carijajan.app.domain.model.ListingPhoto
 import com.carijajan.app.domain.usecase.CaptureGpsUseCase
 import com.carijajan.app.domain.usecase.compressPhoto
 import kotlinx.coroutines.flow.filterNotNull
@@ -47,10 +60,26 @@ fun UploadPhotoScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
+    val listingApi = remember { ListingApi() }
 
     var isCapturing by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    var existingPhotos by remember { mutableStateOf<List<ListingPhoto>>(emptyList()) }
+    var isLoadingPhotos by remember { mutableStateOf(true) }
+    var photoPendingDelete by remember { mutableStateOf<ListingPhoto?>(null) }
+    var isDeletingPhoto by remember { mutableStateOf(false) }
+
+    suspend fun refreshPhotos() {
+        existingPhotos = runCatching { listingApi.getPhotos(listingId) }.getOrDefault(existingPhotos)
+    }
+
+    LaunchedEffect(listingId) {
+        isLoadingPhotos = true
+        refreshPhotos()
+        isLoadingPhotos = false
+    }
 
     val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
     val imageCapture = remember { ImageCapture.Builder().build() }
@@ -108,6 +137,84 @@ fun UploadPhotoScreen(
                 }
             )
 
+            // Galeri foto yang sudah tersimpan — ditampilkan waktu mau nambah foto
+            // baru, supaya penjual bisa lihat & hapus foto lama sebelum/tanpa perlu
+            // ambil foto baru.
+            if (isLoadingPhotos || existingPhotos.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .padding(vertical = 10.dp)
+                ) {
+                    Text(
+                        text = if (isLoadingPhotos) "Memuat foto sebelumnya..." else "Foto sebelumnya — ketuk untuk hapus",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                    if (isLoadingPhotos) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                    } else {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
+                        ) {
+                            items(existingPhotos, key = { it.id }) { photo ->
+                                Box(modifier = Modifier.size(64.dp)) {
+                                    AsyncImage(
+                                        model = photo.thumbnailUrl ?: photo.photoUrl,
+                                        contentDescription = "Foto lapak",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { photoPendingDelete = photo }
+                                    )
+                                    if (photo.isPrimary) {
+                                        Icon(
+                                            Icons.Default.Star,
+                                            contentDescription = "Foto utama",
+                                            tint = Color(0xFFFFC107),
+                                            modifier = Modifier
+                                                .align(Alignment.BottomStart)
+                                                .padding(2.dp)
+                                                .size(16.dp)
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(2.dp)
+                                            .size(18.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Black.copy(alpha = 0.6f))
+                                            .clickable { photoPendingDelete = photo },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Hapus foto",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Shutter Button & Overlay
             Column(
                 modifier = Modifier
@@ -143,10 +250,12 @@ fun UploadPhotoScreen(
                                             val gpsUseCase = CaptureGpsUseCase(context)
                                             val gpsResult = gpsUseCase.execute()
 
-                                            // Step 2: Compress Photo
+                                            // Step 2: Compress Photo (potong 1:1 & luruskan
+                                            // rotasi EXIF) + buat thumbnail
                                             statusText = "Mengompres foto..."
                                             val compressedFile = File(context.cacheDir, "compressed_${System.currentTimeMillis()}.jpg")
-                                            compressPhoto(photoFile, compressedFile)
+                                            val thumbnailFile = File(context.cacheDir, "thumb_${System.currentTimeMillis()}.jpg")
+                                            compressPhoto(photoFile, compressedFile, thumbnailFile)
                                             photoFile.delete()
 
                                             // Step 3: Enqueue WorkManager for Background Upload
@@ -155,6 +264,7 @@ fun UploadPhotoScreen(
                                                 context = context,
                                                 listingId = listingId,
                                                 localFilePath = compressedFile.absolutePath,
+                                                thumbnailFilePath = thumbnailFile.absolutePath,
                                                 latitude = gpsResult.latitude,
                                                 longitude = gpsResult.longitude,
                                                 gpsAccuracyM = gpsResult.accuracyMeters,
@@ -227,6 +337,51 @@ fun UploadPhotoScreen(
                     confirmButton = {
                         Button(onClick = { errorMessage = null }) {
                             Text("Coba Lagi")
+                        }
+                    }
+                )
+            }
+
+            // Delete Photo Confirmation Dialog
+            photoPendingDelete?.let { photo ->
+                AlertDialog(
+                    onDismissRequest = { if (!isDeletingPhoto) photoPendingDelete = null },
+                    title = { Text("Hapus foto ini?") },
+                    text = { Text("Foto akan dihapus permanen dari lapak kamu. Tindakan ini tidak bisa dibatalkan.") },
+                    confirmButton = {
+                        Button(
+                            enabled = !isDeletingPhoto,
+                            onClick = {
+                                isDeletingPhoto = true
+                                scope.launch {
+                                    try {
+                                        listingApi.deletePhoto(photo)
+                                        refreshPhotos()
+                                        photoPendingDelete = null
+                                    } catch (error: Exception) {
+                                        errorMessage = error.localizedMessage ?: "Gagal menghapus foto"
+                                    } finally {
+                                        isDeletingPhoto = false
+                                    }
+                                }
+                            }
+                        ) {
+                            if (isDeletingPhoto) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                Text("Hapus")
+                            }
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            enabled = !isDeletingPhoto,
+                            onClick = { photoPendingDelete = null }
+                        ) {
+                            Text("Batal")
                         }
                     }
                 )

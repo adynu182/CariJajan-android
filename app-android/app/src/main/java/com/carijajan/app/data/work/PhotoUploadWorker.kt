@@ -34,6 +34,7 @@ class PhotoUploadWorker(
     companion object {
         const val KEY_LISTING_ID    = "listing_id"
         const val KEY_LOCAL_PATH    = "local_path"
+        const val KEY_THUMBNAIL_PATH = "thumbnail_path"
         const val KEY_LATITUDE      = "latitude"
         const val KEY_LONGITUDE     = "longitude"
         const val KEY_GPS_ACCURACY  = "gps_accuracy_m"
@@ -54,6 +55,7 @@ class PhotoUploadWorker(
             context: Context,
             listingId: String,
             localFilePath: String,
+            thumbnailFilePath: String,
             latitude: Double,
             longitude: Double,
             gpsAccuracyM: Float,
@@ -63,6 +65,7 @@ class PhotoUploadWorker(
             val data = Data.Builder()
                 .putString(KEY_LISTING_ID, listingId)
                 .putString(KEY_LOCAL_PATH, localFilePath)
+                .putString(KEY_THUMBNAIL_PATH, thumbnailFilePath)
                 .putDouble(KEY_LATITUDE, latitude)
                 .putDouble(KEY_LONGITUDE, longitude)
                 .putFloat(KEY_GPS_ACCURACY, gpsAccuracyM)
@@ -90,16 +93,18 @@ class PhotoUploadWorker(
     }
 
     override suspend fun doWork(): Result {
-        val listingId    = inputData.getString(KEY_LISTING_ID) ?: return Result.failure()
-        val localPath    = inputData.getString(KEY_LOCAL_PATH) ?: return Result.failure()
-        val latitude     = inputData.getDouble(KEY_LATITUDE, 0.0)
-        val longitude    = inputData.getDouble(KEY_LONGITUDE, 0.0)
-        val gpsAccuracy  = inputData.getFloat(KEY_GPS_ACCURACY, 0f)
-        val capturedAt   = inputData.getLong(KEY_CAPTURED_AT, 0L)
-        val isPrimary    = inputData.getBoolean(KEY_IS_PRIMARY, true)
+        val listingId      = inputData.getString(KEY_LISTING_ID) ?: return Result.failure()
+        val localPath      = inputData.getString(KEY_LOCAL_PATH) ?: return Result.failure()
+        val thumbnailPath  = inputData.getString(KEY_THUMBNAIL_PATH) ?: return Result.failure()
+        val latitude       = inputData.getDouble(KEY_LATITUDE, 0.0)
+        val longitude      = inputData.getDouble(KEY_LONGITUDE, 0.0)
+        val gpsAccuracy    = inputData.getFloat(KEY_GPS_ACCURACY, 0f)
+        val capturedAt     = inputData.getLong(KEY_CAPTURED_AT, 0L)
+        val isPrimary      = inputData.getBoolean(KEY_IS_PRIMARY, true)
 
-        val localFile = File(localPath)
-        if (!localFile.exists()) {
+        val localFile     = File(localPath)
+        val thumbnailFile = File(thumbnailPath)
+        if (!localFile.exists() || !thumbnailFile.exists()) {
             // File lokal sudah tidak ada — gagal permanen, jangan retry
             return Result.failure()
         }
@@ -107,18 +112,22 @@ class PhotoUploadWorker(
         return runCatching {
             val storage = SupabaseClientProvider.client.storage
 
-            // 1. Tentukan path di Storage bucket
-            val timestamp = capturedAt
-            val storagePath = "listings/$listingId/${timestamp}_${localFile.name}"
+            // 1. Tentukan path di Storage bucket untuk foto utama & thumbnail-nya
+            val timestamp        = capturedAt
+            val storagePath      = "listings/$listingId/${timestamp}_${localFile.name}"
+            val thumbnailStoragePath = "listings/$listingId/thumb_${timestamp}_${thumbnailFile.name}"
 
-            // 2. Upload ke Supabase Storage
+            // 2. Upload keduanya ke Supabase Storage
             storage[STORAGE_BUCKET].upload(storagePath, localFile.readBytes()) {
                 upsert = true
             }
+            storage[STORAGE_BUCKET].upload(thumbnailStoragePath, thumbnailFile.readBytes()) {
+                upsert = true
+            }
 
-            // 3. Dapatkan public URL
-            val photoUrl      = storage[STORAGE_BUCKET].publicUrl(storagePath)
-            val thumbnailUrl  = null // TODO: buat thumbnail via Edge Function/transform
+            // 3. Dapatkan public URL keduanya
+            val photoUrl     = storage[STORAGE_BUCKET].publicUrl(storagePath)
+            val thumbnailUrl = storage[STORAGE_BUCKET].publicUrl(thumbnailStoragePath)
 
             // 4. Insert record ke listing_photos
             // DB trigger sync_listing_location akan otomatis update current_location & is_open
@@ -138,6 +147,7 @@ class PhotoUploadWorker(
 
             // 5. Hapus file lokal setelah berhasil upload
             localFile.delete()
+            thumbnailFile.delete()
 
             Result.success()
         }.fold(
